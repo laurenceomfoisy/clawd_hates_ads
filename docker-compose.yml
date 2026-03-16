@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  adguard:
+    image: adguard/adguardhome:latest
+    container_name: adguard
+    restart: unless-stopped
+    network_mode: host        # REQUIRED for DHCP broadcast packets
+    cap_add:
+      - NET_ADMIN             # REQUIRED for DHCP server functionality
+    volumes:
+      - ./work:/opt/adguardhome/work
+      - ./conf:/opt/adguardhome/conf
+    environment:
+      - TZ=America/Toronto    # Adjust to your timezone

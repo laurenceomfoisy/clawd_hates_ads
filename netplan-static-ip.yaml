@@ -1,0 +1,23 @@
+# /etc/netplan/01-netcfg.yaml
+# Static IP configuration for AdGuard Home DHCP server
+#
+# IMPORTANT: The static IP must be OUTSIDE your AdGuard DHCP range!
+# Example: Server at .135, DHCP range .100-.250 → OK
+#
+# After editing: sudo netplan apply
+
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    eno1:  # Replace with your interface name (check: ip link show)
+      dhcp4: no
+      addresses:
+        - 192.168.2.135/24   # Your server's static IP
+      routes:
+        - to: default
+          via: 192.168.2.1   # Your router IP
+      nameservers:
+        addresses:
+          - 127.0.0.1        # AdGuard itself (after setup)
+          - 1.1.1.1           # Fallback
