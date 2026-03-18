@@ -81,6 +81,61 @@ Apply: `sudo netplan apply`
 
 ---
 
+### ⚠️ NetworkManager Gotcha: "Auto" Method with Manual Address
+
+**Critical lesson learned March 18, 2026:**
+
+**Problem:** NetworkManager profile set to `ipv4.method: auto` (DHCP) with manual addresses layered on top. Server appeared static but was actually DHCP-dependent. After reboot with router DHCP disabled, server lost network connectivity.
+
+**Symptom:**
+- NetworkManager logs show repeated `dhcp4 (eno1): activation: beginning transaction` failures
+- Interface shows `ip-config-unavailable` errors
+- Server comes up fine when router DHCP is enabled, fails when disabled
+- `nmcli connection show` displays manual IP but method is `auto`
+
+**Root Cause:** NetworkManager's `auto` method attempts DHCP even when manual addresses are configured. Interface won't fully activate without DHCP lease.
+
+**Fix for NetworkManager Users:**
+
+```bash
+# Check current method
+nmcli connection show "Profile 1" | grep ipv4.method
+# If it says "auto", you have the bug!
+
+# Fix: Change to manual method
+sudo nmcli connection modify "Profile 1" \
+  ipv4.method manual \
+  ipv4.addresses 192.168.2.135/24 \
+  ipv4.gateway 192.168.2.1 \
+  ipv4.dns "127.0.0.1,1.1.1.1" \
+  ipv4.ignore-auto-routes yes \
+  ipv4.ignore-auto-dns yes
+
+# Apply changes
+sudo nmcli connection down "Profile 1" && sudo nmcli connection up "Profile 1"
+```
+
+**Verify Fix:**
+
+```bash
+# Method should now be "manual"
+nmcli connection show "Profile 1" | grep ipv4.method
+
+# Should see static IP, no DHCP attempts in logs
+journalctl -u NetworkManager --since "5 minutes ago" | grep dhcp
+
+# Interface should come up without DHCP lease
+ip addr show eno1
+```
+
+**Why This Matters for AdGuard DHCP Takeover:**
+
+When AdGuard takes over DHCP duties, router DHCP is disabled. If your server is secretly DHCP-dependent (even with manual addresses), it **will lose network connectivity** after reboot.
+
+**Always verify:** `ipv4.method: manual` (NOT `auto`) before disabling router DHCP.
+
+---
+
 ### Step 2: Enforce Kernel Parameters (Prevent Blacklist)
 
 Create `/etc/sysctl.d/99-disable-routing.conf`:
