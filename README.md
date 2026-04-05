@@ -546,6 +546,168 @@ Disabled router DHCP, tested iPhone, confirmed working, documented success.
 
 ---
 
+---
+
+## 🔧 Post-Setup: Hardening & Troubleshooting (April 2026 — Rakim)
+
+These lessons were added after the initial working setup, during a follow-up debugging session where ads were still passing through despite AdGuard being up and running.
+
+---
+
+### Problem 1: IPv6 DNS Bypass (The Hidden Culprit)
+
+**Symptom:** AdGuard is running, devices have the right IPv4 DNS (`192.168.2.135`), but ads still appear. iPhone shows `192.168.2.135` as DNS in wifi settings.
+
+**Root Cause:** The router sends **IPv6 Router Advertisements (RA)** that push the ISP's own IPv6 DNS servers (e.g. `2001:4958:732::1`, `2001:4958:733::1`) to every device. iOS and modern OSes will use these IPv6 DNS servers preferentially or as fallback, completely bypassing AdGuard.
+
+**Verification:**
+```bash
+# Check what IPv6 DNS the router is advertising
+# On iPhone: Settings → Wi-Fi → (i) → scroll to DNS
+# If you see IPv6 addresses alongside 192.168.2.135 — this is the problem
+```
+
+**Fix A: Enable AdGuard DHCPv6 to push its own IPv6 DNS via RA**
+
+Update `/opt/adguard/conf/AdGuardHome.yaml`:
+```yaml
+dhcp:
+  enabled: true
+  interface_name: eno1
+  dhcpv4:
+    # ... existing config
+  dhcpv6:
+    range_start: 2001:xxxx:xxxx:xxxx::100  # Use your network's IPv6 prefix
+    lease_duration: 86400
+    ra_slaac_only: false
+    ra_allow_slaac: false
+```
+
+Get your server's stable IPv6 prefix:
+```bash
+ip addr show eno1 | grep "scope global" | grep "mngtmpaddr" | awk '{print $2}'
+# e.g. 2001:4958:3f77:3901:819d:6548:4dc5:d1bb/64
+# Use: 2001:4958:3f77:3901::100 as range_start
+```
+
+Then restart: `sudo docker restart adguard`
+
+AdGuard will now send RAs with its own IPv6 address as DNS, overriding the router's ISP DNS.
+
+**Fix B: Force all DNS through AdGuard with iptables REDIRECT (belt-and-suspenders)**
+
+This intercepts any DNS query going anywhere except AdGuard — including hardcoded DNS like `8.8.8.8` — and redirects it to AdGuard. Covers all devices, all apps.
+
+```bash
+# Redirect all LAN DNS (IPv4) to AdGuard
+sudo iptables -t nat -I PREROUTING 1 \
+  -i eno1 -s 192.168.2.0/24 ! -d 192.168.2.135 \
+  -p udp --dport 53 \
+  -j DNAT --to-destination 192.168.2.135:53
+
+sudo iptables -t nat -I PREROUTING 2 \
+  -i eno1 -s 192.168.2.0/24 ! -d 192.168.2.135 \
+  -p tcp --dport 53 \
+  -j DNAT --to-destination 192.168.2.135:53
+
+# Block specific ISP IPv6 DNS servers (replace with your ISP's addresses)
+sudo ip6tables -I FORWARD 1 -d 2001:4958:732::1 -p udp --dport 53 -j DROP
+sudo ip6tables -I FORWARD 2 -d 2001:4958:733::1 -p udp --dport 53 -j DROP
+sudo ip6tables -I FORWARD 3 -d 2001:4958:732::1 -p tcp --dport 53 -j DROP
+sudo ip6tables -I FORWARD 4 -d 2001:4958:733::1 -p tcp --dport 53 -j DROP
+
+# Persist rules across reboots
+sudo apt-get install -y iptables-persistent
+sudo netfilter-persistent save
+```
+
+**Verify:**
+```bash
+sudo iptables -t nat -L PREROUTING -n | grep "Force DNS"
+sudo ip6tables -L FORWARD -n | grep DROP
+# AdGuard should still work fine
+dig @192.168.2.135 google.com +short
+```
+
+---
+
+### Problem 2: AdGuard DHCP Option 6 — Don't Add It Manually
+
+**This is already in the guide above but worth repeating:**
+
+AdGuard Home **automatically** advertises its own IP as the DNS server (DHCP option 6) to all clients. You do NOT need to add it to the YAML. If you do, you'll get:
+
+```
+dhcpv4: invalid IP is not an IPv4 address
+```
+
+If you accidentally added it:
+```bash
+sudo cp /opt/adguard/conf/AdGuardHome.yaml /opt/adguard/conf/AdGuardHome.yaml.backup
+# Edit the file and remove the options: block under dhcpv4
+# It should look like:
+#   options: []
+sudo docker restart adguard
+```
+
+---
+
+### Problem 3: iPhone MAC Randomization
+
+iPhones use **per-network MAC randomization** by default. Each time the iPhone reconnects, it may present a different MAC address, resulting in a new DHCP lease with a different IP. This is normal behavior — AdGuard handles it fine since it tracks by MAC per lease.
+
+If you want a stable IP for the iPhone, either:
+- Disable MAC randomization on the iPhone: **Settings → Wi-Fi → your network (i) → Private Wi-Fi Address → Off**
+- Or assign a static lease in AdGuard by MAC
+
+---
+
+### Problem 4: iCloud Private Relay
+
+If the iPhone has **iCloud Private Relay** enabled, DNS and traffic are routed through Apple's servers regardless of your network DNS settings. AdGuard Home cannot block anything for that device while it's active.
+
+**Check:** Settings → [your name] → iCloud → Private Relay
+
+If it's on, the device bypasses AdGuard entirely for Safari and some other traffic.
+
+---
+
+### Expanded Filter Lists (Recommended)
+
+The default AdGuard DNS filter (~166K rules) misses a lot of ad networks, especially on aggressive news sites like NY Post. Recommended filter lists to add via **Settings → Filters → DNS Blocklists → Add blocklist**:
+
+| List | Rules | URL |
+|------|-------|-----|
+| OISD Big | ~331K | `https://big.oisd.nl/domainswild` |
+| Steven Black Unified | ~92K | `https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts` |
+| EasyList | ~76K | `https://easylist.to/easylist/easylist.txt` |
+| Dan Pollock Hosts | ~12K | `https://adguardteam.github.io/HostlistsRegistry/assets/filter_4.txt` |
+| Peter Lowe Adservers | ~3.5K | `https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext` |
+
+After adding: **Filters → DNS Blocklists → Update** to force immediate refresh.
+
+With all lists active you'll have ~687K rules vs the default ~173K.
+
+---
+
+### Browser Extension: Complement, Not Replace
+
+DNS-level blocking (AdGuard Home) can't block ads served from the **same domain as the content** (e.g. NY Post video ads served via `nypost.com` subdomains). For this, a browser extension is needed.
+
+**Recommended stacking:**
+- **AdGuard Home** → blocks entire ad domains network-wide, covers ALL devices including TVs, Chromecast, IoT
+- **AdGuard Safari / uBlock Origin** → blocks in-page elements, cosmetic filtering, same-domain ads
+
+They don't interfere. The extension catches what DNS-level can't.
+
+---
+
+### ISP Note (Virgin Plus / Bell Giga Hub 4000)
+
+This guide was originally written for Bell Fibe but the setup is **identical for Virgin Plus** — both use the **Bell Giga Hub 4000** hardware. All steps, port numbers, and router admin URLs (`192.168.2.1`) are the same.
+
+---
+
 ## 🤖 For AI Agents
 
 **When setting up AdGuard Home DHCP takeover:**
