@@ -705,6 +705,73 @@ They don't interfere. The extension catches what DNS-level can't.
 
 ---
 
+### Problem 5: Router RA Wins the IPv6 DNS Race
+
+**Symptom:** radvd or AdGuard DHCPv6 is running and sending RAs with your server's IPv6 DNS, but devices still use the ISP's IPv6 DNS servers. Ads still appear.
+
+**Root Cause:** The router sends Router Advertisements (RAs) more frequently than AdGuard's DHCPv6, and with higher or equal preference. Devices accumulate both DNS entries and use the ISP's servers as fallback or primary.
+
+**Verify the router's RA:**
+```bash
+sudo tcpdump -i eno1 -vv "icmp6" | grep -A 20 "router advertisement"
+# Look for rdnss option listing your ISP's IPv6 DNS addresses
+# Note the frequency (router lifetime) and preference level
+```
+
+**Fix: Install radvd and outcompete the router**
+
+radvd sends RAs with `pref high` and a longer DNS lifetime, which devices prefer over the router's `pref medium` RAs.
+
+```bash
+sudo apt-get install -y radvd
+```
+
+Get your server's stable IPv6 address (the `mngtmpaddr` one, not temporary):
+```bash
+ip addr show eno1 | grep "scope global" | grep "mngtmpaddr" | awk '{print $2}' | cut -d/ -f1
+```
+
+Create `/etc/radvd.conf`:
+```
+interface eno1 {
+    AdvSendAdvert on;
+    MinRtrAdvInterval 3;
+    MaxRtrAdvInterval 10;
+    AdvDefaultPreference high;
+    AdvOtherConfigFlag on;
+
+    prefix 2001:xxxx:xxxx:xxxx::/64 {   # Your network prefix
+        AdvOnLink on;
+        AdvAutonomous on;
+        AdvValidLifetime 300;
+        AdvPreferredLifetime 300;
+    };
+
+    RDNSS 2001:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx {   # Your server's stable IPv6
+        AdvRDNSSLifetime 300;
+    };
+};
+```
+
+```bash
+sudo systemctl enable radvd
+sudo systemctl start radvd
+```
+
+**Verify radvd is sending RAs with your DNS:**
+```bash
+sudo tcpdump -i eno1 -vv "icmp6 and src <your-server-link-local>" | grep -A 15 "router advertisement"
+# Should show: rdnss option, addr: <your server IPv6>, lifetime 300s
+# Should show: pref high
+```
+
+**Why it stays fixed:** Devices receiving two RAs pick the one with higher preference. With `AdvDefaultPreference high` and `AdvRDNSSLifetime 300s` vs the router's `pref medium` and `60s` lifetime, your server wins on every reconnect. radvd starts on boot, so it survives reboots.
+
+**Test:** Toggle wifi off/on on a device, then check its DNS settings — should show only your server's IPv6.
+
+
+---
+
 ### ISP Note (Bell / Virgin Plus / Giga Hub 4000)
 
 This guide was originally written for Bell Fibe but the setup is **identical for Virgin Plus** and any other ISP using the **Bell Giga Hub 4000** hardware. All steps, port numbers, and router admin URLs (`192.168.2.1`) are the same.
