@@ -548,7 +548,7 @@ Disabled router DHCP, tested iPhone, confirmed working, documented success.
 
 ---
 
-## 🔧 Post-Setup: Hardening & Troubleshooting (April 2026 — Rakim)
+## 🔧 Post-Setup: Hardening & Troubleshooting
 
 These lessons were added after the initial working setup, during a follow-up debugging session where ads were still passing through despite AdGuard being up and running.
 
@@ -558,13 +558,13 @@ These lessons were added after the initial working setup, during a follow-up deb
 
 **Symptom:** AdGuard is running, devices have the right IPv4 DNS (`192.168.2.135`), but ads still appear. iPhone shows `192.168.2.135` as DNS in wifi settings.
 
-**Root Cause:** The router sends **IPv6 Router Advertisements (RA)** that push the ISP's own IPv6 DNS servers (e.g. `2001:4958:732::1`, `2001:4958:733::1`) to every device. iOS and modern OSes will use these IPv6 DNS servers preferentially or as fallback, completely bypassing AdGuard.
+**Root Cause:** The router sends **IPv6 Router Advertisements (RA)** that push the ISP's own IPv6 DNS servers to every device. iOS and modern OSes will use these IPv6 DNS servers preferentially or as fallback, completely bypassing AdGuard.
 
 **Verification:**
 ```bash
 # Check what IPv6 DNS the router is advertising
 # On iPhone: Settings → Wi-Fi → (i) → scroll to DNS
-# If you see IPv6 addresses alongside 192.168.2.135 — this is the problem
+# If you see IPv6 addresses (not your server's) alongside 192.168.2.135 — this is the problem
 ```
 
 **Fix A: Enable AdGuard DHCPv6 to push its own IPv6 DNS via RA**
@@ -586,8 +586,8 @@ dhcp:
 Get your server's stable IPv6 prefix:
 ```bash
 ip addr show eno1 | grep "scope global" | grep "mngtmpaddr" | awk '{print $2}'
-# e.g. 2001:4958:3f77:3901:819d:6548:4dc5:d1bb/64
-# Use: 2001:4958:3f77:3901::100 as range_start
+# e.g. 2001:db8:1234:5678:abcd:efgh::/64  (use YOUR network's prefix)
+# Use the first 4 groups + ::100 as range_start
 ```
 
 Then restart: `sudo docker restart adguard`
@@ -610,11 +610,14 @@ sudo iptables -t nat -I PREROUTING 2 \
   -p tcp --dport 53 \
   -j DNAT --to-destination 192.168.2.135:53
 
-# Block specific ISP IPv6 DNS servers (replace with your ISP's addresses)
-sudo ip6tables -I FORWARD 1 -d 2001:4958:732::1 -p udp --dport 53 -j DROP
-sudo ip6tables -I FORWARD 2 -d 2001:4958:733::1 -p udp --dport 53 -j DROP
-sudo ip6tables -I FORWARD 3 -d 2001:4958:732::1 -p tcp --dport 53 -j DROP
-sudo ip6tables -I FORWARD 4 -d 2001:4958:733::1 -p tcp --dport 53 -j DROP
+# Block your ISP's IPv6 DNS servers
+# Find them: on iPhone go to Settings → Wi-Fi → (i) → DNS
+# They'll be IPv6 addresses listed alongside your AdGuard IP
+# Replace the placeholders below with your ISP's actual IPv6 DNS servers
+sudo ip6tables -I FORWARD 1 -d <ISP_IPV6_DNS_1> -p udp --dport 53 -j DROP
+sudo ip6tables -I FORWARD 2 -d <ISP_IPV6_DNS_2> -p udp --dport 53 -j DROP
+sudo ip6tables -I FORWARD 3 -d <ISP_IPV6_DNS_1> -p tcp --dport 53 -j DROP
+sudo ip6tables -I FORWARD 4 -d <ISP_IPV6_DNS_2> -p tcp --dport 53 -j DROP
 
 # Persist rules across reboots
 sudo apt-get install -y iptables-persistent
@@ -702,9 +705,9 @@ They don't interfere. The extension catches what DNS-level can't.
 
 ---
 
-### ISP Note (Virgin Plus / Bell Giga Hub 4000)
+### ISP Note (Bell / Virgin Plus / Giga Hub 4000)
 
-This guide was originally written for Bell Fibe but the setup is **identical for Virgin Plus** — both use the **Bell Giga Hub 4000** hardware. All steps, port numbers, and router admin URLs (`192.168.2.1`) are the same.
+This guide was originally written for Bell Fibe but the setup is **identical for Virgin Plus** and any other ISP using the **Bell Giga Hub 4000** hardware. All steps, port numbers, and router admin URLs (`192.168.2.1`) are the same.
 
 ---
 
